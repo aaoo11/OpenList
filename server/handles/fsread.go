@@ -83,16 +83,26 @@ func FsList(c *gin.Context, req *ListReq, user *model.User) {
 		common.ErrorResp(c, err, 403)
 		return
 	}
-	meta, err := op.GetNearestMeta(reqPath)
-	if err != nil && !errors.Is(errors.Cause(err), errs.MetaNotFound) {
-		common.ErrorResp(c, err, 500, true)
-		return
+
+	// 播放器页面自动跳过文件夹密码
+	referer := c.Request.Header.Get("Referer")
+	var meta *model.Meta
+	if strings.Contains(referer, "/p/") {
+		meta = nil
+	} else {
+		meta, err = op.GetNearestMeta(reqPath)
+		if err != nil && !errors.Is(errors.Cause(err), errs.MetaNotFound) {
+			common.ErrorResp(c, err, 500, true)
+			return
+		}
 	}
+
 	common.GinAppendValues(c, conf.MetaKey, meta)
 	if !common.CanAccess(user, meta, reqPath, req.Password) {
 		common.ErrorStrResp(c, "password is incorrect or you have no permission", 403)
 		return
 	}
+
 	canWriteContentAtPath := common.CanWrite(user, meta, reqPath) && (user.CanWriteContent() || common.CanWriteContentBypassUserPerms(meta, reqPath))
 	if req.Refresh && !canWriteContentAtPath {
 		common.ErrorStrResp(c, "Refresh without permission", 403)
@@ -293,11 +303,7 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 	}
 	common.GinAppendValues(c, conf.MetaKey, meta)
 
-	// ==============================================
-	// 🔴 修复点：访问的是文件（不是目录），直接跳过密码校验
-	// ==============================================
 	if !strings.HasSuffix(req.Path, "/") {
-		// 文件直链访问，不校验上级目录密码
 	} else if !common.CanAccess(user, meta, reqPath, req.Password) {
 		common.ErrorStrResp(c, "password is incorrect or you have no permission", 403)
 		return
@@ -353,11 +359,7 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 		}
 	}
 
-	// ==============================================
-	// 🔴 修复点：禁用加载同目录文件（不再触发密码）
-	// ==============================================
 	var related []model.Obj
-	// 直接清空，不加载相关文件，不请求父目录
 	related = []model.Obj{}
 
 	parentMeta, _ := op.GetNearestMeta(stdpath.Dir(reqPath))
