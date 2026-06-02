@@ -28,7 +28,7 @@ type ListReq struct {
 
 type DirReq struct {
 	Path      string `json:"path" form:"path"`
-	Password  string `json:"password" form:"password"`
+	Password  string `json:"password" form:"force_root"`
 	ForceRoot bool   `json:"force_root" form:"force_root"`
 }
 
@@ -292,10 +292,17 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 		return
 	}
 	common.GinAppendValues(c, conf.MetaKey, meta)
-	if !common.CanAccess(user, meta, reqPath, req.Password) {
+
+	// ==============================================
+	// 🔴 修复点：访问的是文件（不是目录），直接跳过密码校验
+	// ==============================================
+	if !strings.HasSuffix(req.Path, "/") {
+		// 文件直链访问，不校验上级目录密码
+	} else if !common.CanAccess(user, meta, reqPath, req.Password) {
 		common.ErrorStrResp(c, "password is incorrect or you have no permission", 403)
 		return
 	}
+
 	obj, err := fs.Get(c.Request.Context(), reqPath, &fs.GetArgs{
 		WithStorageDetails: !user.IsGuest() && !setting.GetBool(conf.HideStorageDetails),
 	})
@@ -328,11 +335,9 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 					query)
 			}
 		} else {
-			// file have raw url
 			if url, ok := model.GetUrl(obj); ok {
 				rawURL = url
 			} else {
-				// if storage is not proxy, use raw url by fs.Link
 				link, _, err := fs.Link(c.Request.Context(), reqPath, model.LinkArgs{
 					IP:       c.ClientIP(),
 					Header:   c.Request.Header,
@@ -347,13 +352,15 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 			}
 		}
 	}
+
+	// ==============================================
+	// 🔴 修复点：禁用加载同目录文件（不再触发密码）
+	// ==============================================
 	var related []model.Obj
-	parentPath := stdpath.Dir(reqPath)
-	sameLevelFiles, err := fs.List(c.Request.Context(), parentPath, &fs.ListArgs{})
-	if err == nil {
-		related = filterRelated(sameLevelFiles, obj)
-	}
-	parentMeta, _ := op.GetNearestMeta(parentPath)
+	// 直接清空，不加载相关文件，不请求父目录
+	related = []model.Obj{}
+
+	parentMeta, _ := op.GetNearestMeta(stdpath.Dir(reqPath))
 	thumb, _ := model.GetThumb(obj)
 	mountDetails, _ := model.GetStorageDetails(obj)
 	common.SuccessResp(c, FsGetResp{
@@ -365,7 +372,7 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 			Created:      obj.CreateTime(),
 			HashInfoStr:  obj.GetHash().String(),
 			HashInfo:     obj.GetHash().Export(),
-			Sign:         common.Sign(obj, parentPath, isEncrypt(meta, reqPath)),
+			Sign:         common.Sign(obj, stdpath.Dir(reqPath), isEncrypt(meta, reqPath)),
 			Type:         utils.GetFileType(obj.GetName()),
 			Thumb:        thumb,
 			MountDetails: mountDetails,
@@ -374,7 +381,7 @@ func FsGet(c *gin.Context, req *FsGetReq, user *model.User) {
 		Readme:   getReadme(meta, reqPath),
 		Header:   getHeader(meta, reqPath),
 		Provider: provider,
-		Related:  toObjsResp(related, parentPath, isEncrypt(parentMeta, parentPath)),
+		Related:  toObjsResp(related, stdpath.Dir(reqPath), isEncrypt(parentMeta, stdpath.Dir(reqPath))),
 	})
 }
 
